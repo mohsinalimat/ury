@@ -34,7 +34,7 @@ def _aggregate_kot_items(kot_docs):
 		for row in kot.kot_items:
 			key = (row.item, row.comments or "")
 			if kot.type in CANCEL_KOT_TYPES:
-				if key not in cancel_items:
+																																																																																																																																																																																																																																																																																																																																																																												if key not in cancel_items or flt(row.cancelled_qty or 0) > cancel_items[key]["cancelled_qty"]:
 					cancel_items[key] = {
 						"item": row.item,
 						"item_name": row.item_name,
@@ -44,7 +44,7 @@ def _aggregate_kot_items(kot_docs):
 						"course": row.course,
 					}
 			elif kot.type in ADD_KOT_TYPES:
-				if key not in add_items:
+				if key not in add_items or flt(row.quantity or 0) > add_items[key]["quantity"]:
 					add_items[key] = {
 						"item": row.item,
 						"item_name": row.item_name,
@@ -67,7 +67,7 @@ def _get_invoice_item_qty_map(invoice_id):
 		fields=["item_code", "qty", "comment"],
 	):
 		key = (row["item_code"], row.get("comment") or "")
-		qty_map[key] = flt(row.get("qty") or 0)
+		qty_map[key] = qty_map.get(key, 0.0) + flt(row.get("qty") or 0)
 
 	return qty_map
 
@@ -112,7 +112,7 @@ def build_combined_kot_doc(kot_names):
 
 	kot_docs = [frappe.get_doc("URY KOT", name) for name in kot_names]
 	combined_doc = frappe.copy_doc(kot_docs[0])
-	combined_doc.kot_items = []
+	combined_doc.set("kot_items", [])
 
 	if combined_doc.invoice:
 		waiter = frappe.db.get_value("POS Invoice", combined_doc.invoice, "waiter")
