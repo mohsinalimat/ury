@@ -366,6 +366,10 @@ def _run_configure_data(data, results, user):
                 "is_stock_item": 0,  # Maintain Stock == 0
                 "is_sales_item": 1
             })
+            # Only set HSN/SAC for India
+            if frappe.db.get_single_value("System Settings", "country") == "India":
+                item_doc.gst_hsn_code = "996331"
+
             item_doc.insert(ignore_permissions=True)
             results["created_items"].append(item_doc.name)
 
