@@ -54,7 +54,7 @@ page_js = {"point-of-sale": ["public/js/pos_extend.js"]}
 # include js in doctype views
 doctype_js = {
     "POS Closing Entry": "ury/public/js/pos_closing_entry_clock_integrity.js",
-    "Production Plan": "ury/public/js/production_plan_from_sales_plan.js",
+    "Production Plan": "public/js/production_plan_cancel_guard.js",
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
@@ -93,6 +93,11 @@ setup_wizard_requires = [
 
 setup_wizard_stages = "ury.setup.setup_wizard.get_setup_stages"
 
+# Frappe reports a failed background setup only over the realtime socket.
+# Record it server-side as well so the wizard can report the failure over
+# HTTP when the socket is unreachable (see get_setup_progress_status).
+setup_wizard_exception = "ury.ury.api.minimal.setup_organization.record_setup_failure"
+
 ury_demo_master_doctypes = [
     "Gender",
     "Item Group",
@@ -112,9 +117,12 @@ ury_demo_master_doctypes = [
     "URY Restaurant",
     "URY Table",
     "Product Bundle",
+    "POS Profile",
+    "URY Production Department",
     "URY Production Unit",
+    "URY Item Production Configuration",
+    "URY Branch Stock Policy",
     "URY Report Settings",
-    "POS Profile"
 ]
 
 ury_demo_transaction_doctypes = [
@@ -267,6 +275,13 @@ doc_events = {
     "BOM": {"before_validate": "ury.ury.hooks.ury_bom.apply_yield_back_calculation"},
     "Stock Entry": {
         "validate": "ury.ury.api.ury_manufacture_enforcement.validate_manufacture_requires_work_order",
+    },
+    "Work Order": {
+        "validate": "ury.ury.api.ury_work_order_hooks.validate",
+    },
+    "Production Plan": {
+        "on_submit": "ury.ury.api.ury_production_plan_auto_work_order.maybe_create_and_submit_work_orders",
+        "before_cancel": "ury.ury.api.ury_production_plan_cancel_hooks.before_cancel",
     },
 }
 

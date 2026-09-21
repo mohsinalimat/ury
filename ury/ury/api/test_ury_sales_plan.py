@@ -11,7 +11,9 @@ from ury.ury.api.ury_sales_plan import (
     freeze_approval_snapshot,
     populate_item_production_context,
     validate_no_overlapping_plan_scope,
+    validate_plan_has_demand,
     validate_plan_items,
+    validate_items_on_active_menu,
     flag_stale_bom_revisions,
 )
 
@@ -74,6 +76,34 @@ class TestURYSalesPlanContract(FrappeTestCase):
         ) as validate:
             validate_plan_items(doc)
         validate.assert_called_once_with("MTPL", "Branch A")
+
+    def test_plan_with_no_rows_cannot_leave_draft(self):
+        """The complement to the test above: skipping qty-0 rows one by one
+        left nothing checking that the plan as a whole plans SOMETHING, so an
+        empty plan walked the entire path to Locked for Production."""
+        with self.assertRaises(frappe.ValidationError):
+            validate_plan_has_demand(self._doc(items=[]))
+
+    def test_plan_with_only_zero_qty_rows_cannot_leave_draft(self):
+        """A plan carrying the full history-suggested catalog, every row still
+        at its default qty 0, plans exactly as much as an empty one."""
+        doc = self._doc(
+            items=[
+                {"item_code": "MTPL", "qty": 0},
+                {"item_code": "OTHER", "qty": 0},
+            ]
+        )
+        with self.assertRaises(frappe.ValidationError):
+            validate_plan_has_demand(doc)
+
+    def test_plan_with_one_nonzero_row_can_leave_draft(self):
+        doc = self._doc(
+            items=[
+                {"item_code": "MTPL", "qty": 0},
+                {"item_code": "OTHER", "qty": 3},
+            ]
+        )
+        validate_plan_has_demand(doc)
 
     def test_snapshot_is_immutable_once_created(self):
         doc = self._doc()
@@ -445,6 +475,53 @@ class TestURYSalesPlanEndpoints(FrappeTestCase):
         self.assertEqual(doc.enforcement_mode, "Soft")
 
 
+
+class TestValidateItemsOnActiveMenu(FrappeTestCase):
+    """Menu membership (URY Menu / URY Menu Item), not a separate
+    sub-assembly flag, is the sellable discriminator -- see the docstring on
+    validate_items_on_active_menu. Rows with qty 0 are exempt (untouched
+    history suggestions)."""
+
+    def setUp(self):
+        self.branch = make_branch(branch="Menu Guard Test Branch")
+        self.on_menu_item = make_item(item_code="MENU-GUARD-ON-1", item_name="Menu Guard On")
+        self.off_menu_item = make_item(item_code="MENU-GUARD-OFF-1", item_name="Menu Guard Off")
+        frappe.db.set_single_value("URY Production Settings", "require_active_menu_for_planning", 1)
+        frappe.db.delete("URY Menu", {"name": "Menu Guard Test Menu"})
+        self.menu = frappe.get_doc({
+            "doctype": "URY Menu",
+            "name": "Menu Guard Test Menu",
+            "branch": self.branch.name,
+            "enabled": 1,
+            "items": [{"item": self.on_menu_item.name, "disabled": 0}],
+        }).insert(ignore_permissions=True)
+        self.addCleanup(lambda: frappe.db.delete("URY Menu", {"name": "Menu Guard Test Menu"}))
+
+    def tearDown(self):
+        frappe.db.set_single_value("URY Production Settings", "require_active_menu_for_planning", 1)
+
+    def _doc(self, item_code, qty):
+        return {"branch": self.branch.name, "items": [{"item_code": item_code, "qty": qty}]}
+
+    def test_on_menu_item_passes(self):
+        validate_items_on_active_menu(self._doc(self.on_menu_item.name, 1))
+
+    def test_off_menu_item_blocked_strict(self):
+        with self.assertRaises(frappe.ValidationError):
+            validate_items_on_active_menu(self._doc(self.off_menu_item.name, 1), strict=True)
+
+    def test_off_menu_item_warns_not_strict(self):
+        # Must not raise -- draft saves warn, they don't block.
+        validate_items_on_active_menu(self._doc(self.off_menu_item.name, 1), strict=False)
+
+    def test_zero_qty_row_is_exempt(self):
+        validate_items_on_active_menu(self._doc(self.off_menu_item.name, 0), strict=True)
+
+    def test_setting_off_disables_check(self):
+        frappe.db.set_single_value("URY Production Settings", "require_active_menu_for_planning", 0)
+        validate_items_on_active_menu(self._doc(self.off_menu_item.name, 1), strict=True)
+
+
 class TestPopulateItemProductionContext(FrappeTestCase):
     def _doc(self, **values):
         doc = frappe._dict(
@@ -806,6 +883,30 @@ class TestSalesPlanWorkflowTransitions(FrappeTestCase):
 			}
 		).insert(ignore_permissions=True)
 
+	def _ensure_menu(self, item_code, branch):
+		# validate_items_on_active_menu() (invoked on every non-terminal save
+		# and strictly at the Approved transition) requires a sellable item
+		# with qty > 0 to be on an enabled URY Menu for the plan's branch
+		# (default-on setting, see ury_production_settings.py). Get-or-create
+		# so setUp is idempotent/safe to call more than once.
+		menu_name = f"{branch} Menu"
+		if frappe.db.exists("URY Menu", menu_name):
+			menu = frappe.get_doc("URY Menu", menu_name)
+			if not any(row.item == item_code for row in menu.items):
+				menu.append("items", {"item": item_code, "disabled": 0})
+				menu.enabled = 1
+				menu.save(ignore_permissions=True)
+			return
+		frappe.get_doc(
+			{
+				"doctype": "URY Menu",
+				"name": menu_name,
+				"branch": branch,
+				"enabled": 1,
+				"items": [{"item": item_code, "disabled": 0}],
+			}
+		).insert(ignore_permissions=True)
+
 	def _create_user(self, email, roles):
 		if frappe.db.exists("User", email):
 			frappe.delete_doc("User", email, force=True, ignore_permissions=True)
@@ -831,6 +932,7 @@ class TestSalesPlanWorkflowTransitions(FrappeTestCase):
 		self._ensure_branch(self.branch, self.company)
 		self._ensure_item("MTPL")
 		self._ensure_item_production_configuration("MTPL", self.branch, self.company)
+		self._ensure_menu("MTPL", self.branch)
 		self._create_user(TEST_SALES_PLAN_MANAGER, roles=["URY Manager"])
 		self._create_user(TEST_SALES_PLAN_NON_MANAGER, roles=[])
 		self._create_user(
