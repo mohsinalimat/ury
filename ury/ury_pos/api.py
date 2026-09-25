@@ -904,7 +904,7 @@ def getPosProfileFull(pos_profile):
         "country": profile.country,
         "disabled": profile.disabled,
         "warehouse": profile.warehouse,
-        "campaign": profile.campaign,
+        "campaign": profile.get("campaign") if profile.meta.has_field("campaign") else None,
         "company_address": profile.company_address,
         "restaurant": profile.restaurant,
         "branch": profile.branch,
